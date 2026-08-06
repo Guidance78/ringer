@@ -577,19 +577,111 @@ class RingerCliTests(unittest.TestCase):
 
 
     def test_check_timeout_is_reported_separately_from_worker_timeout(self) -> None:
-        original_timeout = ringer.CHECK_TIMEOUT_S
-        ringer.CHECK_TIMEOUT_S = 1
         with tempfile.TemporaryDirectory(prefix="ringer-check-timeout-") as tmp:
-            try:
-                returncode, timed_out, output = asyncio.run(
-                    ringer.Verifier._run_check("sleep 5", Path(tmp))
-                )
-            finally:
-                ringer.CHECK_TIMEOUT_S = original_timeout
+            returncode, timed_out, output = asyncio.run(
+                ringer.Verifier._run_check("sleep 5", Path(tmp), timeout_s=1)
+            )
 
         self.assertTrue(timed_out)
         self.assertNotEqual(returncode, 0)
-        self.assertIn("[ringer.py] check timed out after 1s", output)
+        self.assertIn(
+            "[ringer.py] check timed out after 1s; "
+            "set check_timeout_s on this task if the verification legitimately needs longer",
+            output,
+        )
+
+    def test_check_timeout_s_defaults_to_module_constant_when_absent(self) -> None:
+        task = ringer.TaskSpec.from_obj(
+            {
+                "key": "defaults",
+                "spec": "Default check budget.",
+                "check": "true",
+            }
+        )
+        self.assertEqual(task.check_timeout_s, ringer.CHECK_TIMEOUT_S)
+
+    def test_check_timeout_s_is_stored_when_provided(self) -> None:
+        task = ringer.TaskSpec.from_obj(
+            {
+                "key": "custom",
+                "spec": "Custom check budget.",
+                "check": "true",
+                "check_timeout_s": 120,
+            }
+        )
+        self.assertEqual(task.check_timeout_s, 120)
+
+    def test_check_timeout_s_rejects_bool_string_and_float(self) -> None:
+        for raw in (True, False, "120", 1.5):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "check_timeout_s must be an integer"):
+                    ringer.TaskSpec.from_obj(
+                        {
+                            "key": "bad",
+                            "spec": "Bad budget.",
+                            "check": "true",
+                            "check_timeout_s": raw,
+                        }
+                    )
+
+    def test_check_timeout_s_rejects_non_positive(self) -> None:
+        for raw in (0, -1):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "check_timeout_s must be positive"):
+                    ringer.TaskSpec.from_obj(
+                        {
+                            "key": "bad",
+                            "spec": "Bad budget.",
+                            "check": "true",
+                            "check_timeout_s": raw,
+                        }
+                    )
+
+    def test_verifier_uses_per_task_check_timeout_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ringer-check-budget-") as tmp:
+            taskdir = Path(tmp)
+            slow = ringer.TaskSpec.from_obj(
+                {
+                    "key": "slow",
+                    "spec": "Slow verification.",
+                    "check": "sleep 2",
+                    "check_timeout_s": 1,
+                }
+            )
+            timeout_result = asyncio.run(ringer.Verifier().verify(slow, taskdir))
+            self.assertTrue(timeout_result.check_timed_out)
+            self.assertFalse(timeout_result.ok)
+            self.assertIn(
+                "set check_timeout_s on this task if the verification legitimately needs longer",
+                timeout_result.raw_output_excerpt,
+            )
+
+            enough = ringer.TaskSpec.from_obj(
+                {
+                    "key": "slow",
+                    "spec": "Slow verification.",
+                    "check": "sleep 2",
+                    "check_timeout_s": 5,
+                }
+            )
+            pass_result = asyncio.run(ringer.Verifier().verify(enough, taskdir))
+            self.assertFalse(pass_result.check_timed_out)
+            self.assertEqual(pass_result.check_returncode, 0)
+            self.assertTrue(pass_result.ok)
+
+    def test_manifest_task_without_timeout_fields_keeps_today_defaults(self) -> None:
+        task = ringer.TaskSpec.from_obj(
+            {
+                "key": "legacy",
+                "spec": "Legacy manifest shape.",
+                "check": "printf ok",
+            }
+        )
+        self.assertEqual(task.timeout_s, ringer.DEFAULT_TIMEOUT_S)
+        self.assertEqual(task.check_timeout_s, ringer.CHECK_TIMEOUT_S)
+        with tempfile.TemporaryDirectory(prefix="ringer-check-legacy-") as tmp:
+            result = asyncio.run(ringer.Verifier().verify(task, Path(tmp)))
+        self.assertTrue(result.ok)
 
     def test_token_count_parser_accepts_colon_and_newline_formats(self) -> None:
         self.assertEqual(ringer.parse_token_count("tokens used: 1,234", r"tokens\s+used\s*:?\s*([0-9][0-9,]*)"), 1234)

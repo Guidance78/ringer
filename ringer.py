@@ -1634,6 +1634,7 @@ class TaskSpec:
     expect_files: tuple[str, ...] = ()
     timeout_s: int = DEFAULT_TIMEOUT_S
     max_attempts: int = 2
+    check_timeout_s: int = CHECK_TIMEOUT_S
     redact_spec: bool = False
     full_access: bool = False
     engine_args: tuple[str, ...] = ()
@@ -1682,6 +1683,15 @@ class TaskSpec:
         max_attempts = raw_max_attempts
         if max_attempts <= 0:
             raise ValueError(f"task {key}: max_attempts must be positive")
+        raw_check_timeout_s = obj.get("check_timeout_s", CHECK_TIMEOUT_S)
+        if isinstance(raw_check_timeout_s, bool) or not isinstance(raw_check_timeout_s, int):
+            raise ValueError(
+                f"task {key}: check_timeout_s must be an integer, "
+                f"got {type(raw_check_timeout_s).__name__}"
+            )
+        check_timeout_s = raw_check_timeout_s
+        if check_timeout_s <= 0:
+            raise ValueError(f"task {key}: check_timeout_s must be positive")
         engine_args = obj.get("engine_args", [])
         if not isinstance(engine_args, list) or not all(isinstance(item, str) for item in engine_args):
             raise ValueError(f"task {key}: engine_args must be a list of strings")
@@ -1702,6 +1712,7 @@ class TaskSpec:
             expect_files=tuple(str(item) for item in expect_files),
             timeout_s=timeout_s,
             max_attempts=max_attempts,
+            check_timeout_s=check_timeout_s,
             redact_spec=require_bool(obj.get("redact_spec", False), key, "redact_spec"),
             full_access=bool(obj.get("full_access", False)),
             engine_args=tuple(engine_args),
@@ -8607,7 +8618,7 @@ def run_models_command(config: AppConfig, args: argparse.Namespace) -> int:
 
 class Verifier:
     async def verify(self, task: TaskSpec, taskdir: Path) -> VerifyResult:
-        check_returncode, check_timed_out, output = await self._run_check(task.check, taskdir)
+        check_returncode, check_timed_out, output = await self._run_check(task.check, taskdir, timeout_s=task.check_timeout_s)
         missing_files = tuple(
             rel for rel in task.expect_files if not self._is_nonempty_file(self._expect_file_path(taskdir, rel))
         )
@@ -8645,7 +8656,7 @@ class Verifier:
         return candidate if candidate.is_absolute() else taskdir / candidate
 
     @staticmethod
-    async def _run_check(command: str, cwd: Path) -> tuple[int | None, bool, str]:
+    async def _run_check(command: str, cwd: Path, timeout_s: int) -> tuple[int | None, bool, str]:
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(cwd),
@@ -8656,7 +8667,7 @@ class Verifier:
         )
         timed_out = False
         try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=CHECK_TIMEOUT_S)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         except asyncio.TimeoutError:
             timed_out = True
             terminate_process_group(proc)
@@ -8667,7 +8678,10 @@ class Verifier:
                 stdout, _ = await proc.communicate()
         output = stdout.decode("utf-8", errors="replace") if stdout else ""
         if timed_out:
-            output += f"\n[ringer.py] check timed out after {CHECK_TIMEOUT_S}s\n"
+            output += (
+                f"\n[ringer.py] check timed out after {timeout_s}s; "
+                "set check_timeout_s on this task if the verification legitimately needs longer\n"
+            )
         return proc.returncode, timed_out, output
 
 
