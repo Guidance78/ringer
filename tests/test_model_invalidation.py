@@ -43,6 +43,7 @@ def attempt(
     task_type: str = "code-feature",
     logged_at: str = "2026-07-06T10:00:00+00:00",
     invalidated: bool = False,
+    retry: bool = False,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "run_id": run_id,
@@ -51,7 +52,7 @@ def attempt(
         "model": model,
         "task_type": task_type,
         "verdict": verdict,
-        "retry": False,
+        "retry": retry,
         "duration_ms": 100,
         "worker_tokens": 200,
         "logged_at": logged_at,
@@ -124,6 +125,7 @@ class ModelInvalidationTests(unittest.TestCase):
             "invalidate_run_id": None,
             "invalidate_task_key": None,
             "reason": None,
+            "first_attempt_only": False,
         }
         values.update(overrides)
         return argparse.Namespace(**values)
@@ -169,6 +171,54 @@ class ModelInvalidationTests(unittest.TestCase):
         self.assertEqual(unrelated, lines[2])
         self.assertEqual(other_task, lines[3])
         self.assertEqual("wrong task", json.loads(lines[1])["invalidation_reason"])
+
+    def test_first_attempt_only_excludes_only_the_blocked_attempt(self) -> None:
+        # A harness failure followed by a genuine rescuing retry, in the same
+        # (run_id, task_key). Whole-task invalidation would wipe out the
+        # rescue along with the failure; --first-attempt-only must not.
+        write_jsonl(
+            self.log_path,
+            [
+                attempt(
+                    "run-1", "a", model="acme/rescued", verdict="FAIL",
+                    logged_at="2026-07-06T10:00:00+00:00", retry=False,
+                ),
+                attempt(
+                    "run-1", "a", model="acme/rescued", verdict="PASS",
+                    logged_at="2026-07-06T10:05:00+00:00", retry=True,
+                ),
+                attempt(
+                    "run-2", "b", model="acme/genuine", verdict="FAIL",
+                    logged_at="2026-07-06T10:00:00+00:00", retry=False,
+                ),
+            ],
+        )
+
+        result = invalidate_model_log_rows(
+            self.log_path,
+            run_id="run-1",
+            task_key="a",
+            reason="harness blocked the first attempt; retry is genuine",
+            first_attempt_only=True,
+        )
+
+        self.assertEqual((1, 1, 0), (result.matched, result.newly_invalidated, result.already_invalidated))
+        rows = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(rows[0]["evidence_excluded"])
+        self.assertNotIn("evidence_excluded", rows[1])
+        self.assertNotIn("evidence_excluded", rows[2])
+
+        rollup = aggregate_model_scoreboard_rows(rows)
+        by_model = {r["model"]: r for r in rollup}
+        rescued = by_model["acme/rescued"]
+        self.assertEqual(1, rescued["tasks"])
+        self.assertEqual(1.0, rescued["first_try_pass_rate"])
+        self.assertEqual(1.0, rescued["pass_rate"])
+        self.assertEqual(1, rescued["invalidated_rows"])
+        genuine = by_model["acme/genuine"]
+        self.assertEqual(1, genuine["tasks"])
+        self.assertEqual(0.0, genuine["pass_rate"])
+        self.assertEqual(0, genuine["invalidated_rows"])
 
     def test_mixed_and_repeat_preserve_existing_invalidation_metadata(self) -> None:
         already_line = (

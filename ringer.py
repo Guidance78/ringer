@@ -6163,10 +6163,13 @@ def model_log_row_matches_invalidation(
     *,
     run_id: str,
     task_key: str | None = None,
+    first_attempt_only: bool = False,
 ) -> bool:
     if model_log_text(row.get("run_id")) != run_id:
         return False
     if task_key is not None and model_log_text(row.get("task_key")) != task_key:
+        return False
+    if first_attempt_only and model_log_row_is_retry(row):
         return False
     return True
 
@@ -6185,6 +6188,7 @@ def invalidate_model_log_rows(
     run_id: str,
     task_key: str | None = None,
     reason: str,
+    first_attempt_only: bool = False,
     now: datetime | None = None,
 ) -> ModelInvalidationResult:
     path = path.expanduser().resolve()
@@ -6231,6 +6235,7 @@ def invalidate_model_log_rows(
                     row,
                     run_id=run_id,
                     task_key=task_key,
+                    first_attempt_only=first_attempt_only,
                 ):
                     dst.write(output)
                     continue
@@ -8964,6 +8969,7 @@ def run_models_invalidate_command(config: AppConfig, args: argparse.Namespace) -
     run_id = model_log_text(getattr(args, "invalidate_run_id", ""))
     task_key = model_log_text(getattr(args, "invalidate_task_key", "")) or None
     reason = model_log_text(getattr(args, "reason", ""))
+    first_attempt_only = bool(getattr(args, "first_attempt_only", False))
     if not run_id:
         print("models --invalidate requires --run <run_id>", file=sys.stderr)
         return 2
@@ -8976,6 +8982,7 @@ def run_models_invalidate_command(config: AppConfig, args: argparse.Namespace) -
             run_id=run_id,
             task_key=task_key,
             reason=reason,
+            first_attempt_only=first_attempt_only,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -8983,7 +8990,11 @@ def run_models_invalidate_command(config: AppConfig, args: argparse.Namespace) -
     except OSError as exc:
         print(f"models invalidate failed: {exc}", file=sys.stderr)
         return 1
-    selector = f"run={run_id}" + (f" task={task_key}" if task_key else "")
+    selector = (
+        f"run={run_id}"
+        + (f" task={task_key}" if task_key else "")
+        + (" first-attempt-only" if first_attempt_only else "")
+    )
     if result.matched == 0:
         print(f"No matching model log rows for {selector} in {result.path}", file=sys.stderr)
         return 1
@@ -11554,6 +11565,12 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser.add_argument("--run", dest="invalidate_run_id", help="run_id selector for --invalidate")
     models_parser.add_argument("--task", dest="invalidate_task_key", help="task_key selector for --invalidate")
     models_parser.add_argument("--reason", help="non-empty invalidation reason for --invalidate")
+    models_parser.add_argument(
+        "--first-attempt-only",
+        action="store_true",
+        help="with --invalidate, only invalidate the first attempt of each matched task, "
+        "leaving any retry (e.g. a genuine pass that rescued a harness failure) untouched",
+    )
 
     catalog_parser = subparsers.add_parser("catalog", help="show or refresh the local OpenRouter model catalog")
     catalog_parser.add_argument("--refresh", action="store_true", help="fetch source and rewrite the local snapshot")
