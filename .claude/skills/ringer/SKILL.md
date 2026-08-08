@@ -291,6 +291,18 @@ per task via the manifest `engine` field. Defaults are deliberate:
   code-feature, code-fix, code-review, research, persona-review, site-build,
   image-gen, docs, probe, bakeoff, ...). Untyped tasks bucket as (untyped)
   and teach the scoreboard nothing; lint nudges you when it's missing.
+- **A verdict that isn't `PASS` isn't automatically the model's fault.** If a
+  check fails because the worker never actually ran — sandbox/harness blocked
+  before exec, missing binary, host defect — that's evidence about the
+  machine, not the model, and it must not sit in the scoreboard as a
+  failure. Exclude it: `./ringer.py models --invalidate --run <run_id>
+  [--task <task_key>] --reason "<what broke>"`. This keeps the row (audit
+  trail, visible `Invalidated` count in the table) but drops it from the
+  model's `tasks`/`pass_rate`/`first_try_pass_rate`. If the same task also
+  got a genuine pass on retry, add `--first-attempt-only` so only the
+  blocked attempt is excluded and the retry still earns first-try credit —
+  plain `--invalidate` on that task would wipe the pass out too. Never
+  invalidate a real `FAIL`; that's gaming the scoreboard, not correcting it.
 
 ## Worktrees-mode footguns (learned the hard way)
 
