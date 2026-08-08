@@ -1419,6 +1419,13 @@
         }).sort((left, right) => right.finishedTs - left.finishedTs);
         const updatedAt = String(item.updated_at || "");
         const updatedTs = parseTime(updatedAt) || normalizedVersions[0]?.finishedTs || 0;
+        // The oldest version's timestamp is when this session first appeared,
+        // and it never moves again — unlike updatedTs, which flushes on every
+        // heartbeat of a live run. Sort key for "latest to oldest" has to be
+        // this, not updatedTs, or two live runs would swap rows constantly.
+        const createdTs = normalizedVersions.length
+          ? normalizedVersions[normalizedVersions.length - 1].finishedTs
+          : updatedTs;
         return {
           name: String(name || "artifact"),
           live_path: String(item.live_path || ""),
@@ -1427,14 +1434,18 @@
           current_run_id: String(item.current_run_id || ""),
           updated_at: updatedAt,
           updatedTs,
+          createdTs,
           versions: normalizedVersions
         };
       }).filter(item => item.name).sort((left, right) => {
         const leftLive = left.state === "live" ? 1 : 0;
         const rightLive = right.state === "live" ? 1 : 0;
         if (leftLive !== rightLive) return rightLive - leftLive;
-        // Stable within each group: two live runs must never swap rows as
-        // their "updated Ns ago" leapfrogs every flush (demo-night lesson).
+        // Latest session first. createdTs (see above) is stable within each
+        // group, so two live runs never swap rows as "updated Ns ago"
+        // leapfrogs every flush (demo-night lesson) — only name breaks a
+        // genuine tie.
+        if (right.createdTs !== left.createdTs) return right.createdTs - left.createdTs;
         return left.name.localeCompare(right.name);
       });
     }
