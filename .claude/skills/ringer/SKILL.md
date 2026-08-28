@@ -22,7 +22,7 @@ description: >-
 
 # Ringer orchestrator playbook
 
-## Read this first — the four rules that actually get broken
+## Read this first — the five rules that actually get broken
 
 1. **You review; workers type.** Your lane: specs, checks, pattern choice,
    reading results. If you are typing implementation, running probes, or
@@ -34,8 +34,30 @@ description: >-
    is individually small enough to justify inline, and two hours later the
    exception has become the workflow and nothing was verified or visible.
    The one-shot exception is ONE file, a few lines, ONCE. The second pass on
-   the same problem is a loop, and loops are manifests.
-4. **Runs are watched, not hidden — and the screen comes up FIRST.** The
+   the same problem is a loop, and loops are manifests. **This spiral runs at
+   multi-day scale too** — a 2026-08-27 review found continuous inline coding
+   stretched across days, each edit individually excused as "just this one
+   tweak before I delegate the rest." That excuse is the trigger, not a
+   reason to keep going: the moment a second edit toward the same goal is
+   about to happen, stop typing and write the manifest for whatever remains,
+   however small it looks. Typing the fix yourself is not a faster path to
+   delegating it later — it's the spiral. The job is specs and review; tokens
+   spent typing implementation are tokens the orchestrator had no business
+   spending.
+4. **Verify the check before you debug the failure — especially before reaching
+   for a stronger model.** A FAIL from Ringer is a claim about the check, not
+   proof about the worker. A 2026-08-11 state-substrate round cost three
+   separate correction cycles before anyone confirmed the checks themselves
+   were broken (stale assertions, wall-clock-dependent tests, fixtures
+   guessed against an unverified API) — none of it was the worker's fault,
+   and the debugging happened at Opus rates: that one session cost $1,373 in
+   orchestrator spend alone (2026-08-27 cost review). Before writing a single
+   line of your own debugging, do the Post-run review ritual's check-first
+   step (below): read the raw worker log, confirm the check failed for the
+   RIGHT reason. Only debug or escalate to a pricier model once the check is
+   confirmed sound — a cheap check that's actually broken is not a reason to
+   bring in an expensive model to argue with it.
+5. **Runs are watched, not hidden — and the screen comes up FIRST.** The
    moment this skill loads for real work, before you write a single spec,
    put Ringside on the human's screen: `./ringer.py hud` (idempotent — if
    one is already up it says so and opens the page; runs also auto-start
@@ -103,6 +125,42 @@ you intend to act on, anything whose output a check could actually execute —
 those keep the full path. When a request sits near the line, the tiebreaker is
 whether you could write a check that would catch a wrong answer. If you can,
 write it, and make it a manifest.
+
+## Wait on notification, not polling
+
+A launched run is background work the harness already tracks — treat it that
+way, not as something to check in on. (Added 2026-08-27 after autonomous
+loop ticks burned turns polling a run that had already finished.)
+
+- **Start the run backgrounded and let the completion notification do the
+  waiting.** `./ringer.py run manifest.json ...` is a normal CLI call —
+  launch it as a backgrounded command and stop there. You are notified
+  automatically when it finishes. Do not sleep, poll, or re-invoke
+  `./ringer.py` / re-check the HUD in a loop to ask "is it done yet" —
+  that is exactly the polling this rule replaces. A CLI without a built-in
+  background+notify primitive should instead run the command as a single
+  blocking foreground child and wait on its exit, rather than polling logs
+  or the HUD on an interval — same principle, different mechanism.
+- **A scheduled wakeup paces the NEXT round, not the CURRENT one.** If a
+  multi-round goal is running under a dynamic wakeup loop, that loop decides
+  when to author and launch the next manifest — it is not a substitute for
+  the completion notification of the run already in flight. Reserve wakeups
+  for a long fallback heartbeat (in case a notification never fires) or for
+  external state Ringer genuinely can't push to you, never for a short
+  interval whose only job is checking whether a background run is done.
+- **Two consecutive empty ticks means stop, not retry.** If a loop wakes up
+  twice in a row and neither tick found completed work, do not schedule a
+  third wakeup on the same assumption. Stop immediately and report, in one
+  message: what you were waiting on (which run/task), whether a completion
+  notification has actually fired for anything this session (if it never
+  has, say so explicitly — that's the bug, not "still waiting"), and exactly
+  what's needed from the human to unblock (approval, a fixed check, a
+  credential, or just confirmation to keep waiting longer).
+- **Ringer itself has no push/webhook mechanism.** `run` is a blocking CLI
+  call until you background it — the "notification" is the orchestrating
+  session's own background-task completion signal, and it only fires if the
+  run was launched backgrounded in the first place rather than fired, then
+  polled for by a separate wakeup loop.
 
 ## One job, one artifact
 
