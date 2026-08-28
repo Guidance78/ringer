@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -11,7 +14,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ringer import Manifest, TaskSpec, Verifier, lint_manifest  # noqa: E402
+from ringer import (  # noqa: E402
+    AppConfig,
+    Manifest,
+    TaskSpec,
+    Verifier,
+    lint_manifest,
+    main,
+)
 
 
 LONG_SPEC = (
@@ -380,6 +390,166 @@ class LintManifestTests(unittest.TestCase):
                 manifest = Manifest.from_path(path)
                 findings = lint_manifest(manifest)
                 self.assertEqual([], findings, f"{path} should lint clean, got: {findings}")
+
+
+CONFIG_TOML = (
+    '[engines.mock]\n'
+    'bin = "python3"\n'
+    'args_template = ["-c", "print(1)", "{spec}"]\n'
+)
+
+
+class ConfiguredEngineLintTests(unittest.TestCase):
+    LONG_SPEC = (
+        "Create the requested artifact in the current working directory, keep the change scoped, "
+        "and make the check command able to explain any failure clearly."
+    )
+
+    GOOD_CHECK = (
+        "test -s output.txt && grep -q 'ready' output.txt || "
+        "{ echo 'FAIL: output.txt missing or does not contain ready'; exit 1; }"
+    )
+
+    def manifest_obj(self, engine: str, root: str) -> dict[str, object]:
+        return {
+            "run_name": "configured-engine-lint",
+            "workdir": str(Path(root) / "work"),
+            "tasks": [
+                {
+                    "key": "one",
+                    "engine": engine,
+                    "spec": self.LONG_SPEC,
+                    "check": self.GOOD_CHECK,
+                    "expect_files": ["output.txt"],
+                    "verified": "the output file exists and contains the expected content",
+                }
+            ],
+        }
+
+    def write_config(self, root: str) -> Path:
+        config_path = Path(root) / "config.toml"
+        config_path.write_text(CONFIG_TOML, encoding="utf-8")
+        return config_path
+
+    def run_lint_cli(
+        self,
+        manifest_path: Path,
+        config_path: Path | None,
+    ) -> tuple[int, str, str]:
+        old = os.environ.get("RINGER_NO_SELF_UPDATE")
+        os.environ["RINGER_NO_SELF_UPDATE"] = "1"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                try:
+                    argv = ["lint", str(manifest_path)]
+                    if config_path is not None:
+                        argv.extend(["--config", str(config_path)])
+                    result = main(argv)
+                except SystemExit as exc:
+                    result = int(exc.code) if isinstance(exc.code, int) else 1
+        finally:
+            if old is None:
+                os.environ.pop("RINGER_NO_SELF_UPDATE", None)
+            else:
+                os.environ["RINGER_NO_SELF_UPDATE"] = old
+        return result, stdout.getvalue(), stderr.getvalue()
+
+    def test_opt_in_api_rejects_unknown_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            config = AppConfig.load(self.write_config(root))
+            manifest = Manifest.from_obj(self.manifest_obj("no-such-engine", root))
+            findings = lint_manifest(
+                manifest,
+                config=config,
+                check_configured_engines=True,
+            )
+        self.assertTrue(
+            any(
+                "not configured" in item and "no-such-engine" in item
+                for item in findings
+            ),
+            f"expected an unknown-engine finding, got: {findings}",
+        )
+
+    def test_opt_in_api_accepts_configured_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            config = AppConfig.load(self.write_config(root))
+            manifest = Manifest.from_obj(self.manifest_obj("mock", root))
+            findings = lint_manifest(
+                manifest,
+                config=config,
+                check_configured_engines=True,
+            )
+        self.assertFalse(
+            any("not configured" in item for item in findings),
+            f"configured engine should lint clean, got: {findings}",
+        )
+
+    def test_default_api_remains_config_free(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            manifest = Manifest.from_obj(self.manifest_obj("no-such-engine", root))
+            findings = lint_manifest(manifest)
+        self.assertFalse(
+            any("not configured" in item for item in findings),
+            "default lint must not validate engines without a config",
+        )
+
+    def test_opt_in_api_without_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            manifest = Manifest.from_obj(self.manifest_obj("no-such-engine", root))
+        with self.assertRaisesRegex(ValueError, r"check_configured_engines=True requires a config"):
+            lint_manifest(manifest, check_configured_engines=True)
+
+    def test_cli_explicit_config_rejects_unknown_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            config_path = self.write_config(root)
+            manifest_path = Path(root) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(self.manifest_obj("no-such-engine", root)),
+                encoding="utf-8",
+            )
+            code, output, _ = self.run_lint_cli(manifest_path, config_path)
+        self.assertEqual(1, code)
+        self.assertIn("no-such-engine", output)
+        self.assertIn("not configured", output)
+
+    def test_cli_explicit_config_accepts_configured_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            config_path = self.write_config(root)
+            manifest_path = Path(root) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(self.manifest_obj("mock", root)),
+                encoding="utf-8",
+            )
+            code, output, _ = self.run_lint_cli(manifest_path, config_path)
+        self.assertEqual(0, code)
+        self.assertIn("lint: clean", output)
+
+    def test_cli_without_config_stays_clean_for_unknown_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            manifest_path = Path(root) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(self.manifest_obj("no-such-engine", root)),
+                encoding="utf-8",
+            )
+            code, output, _ = self.run_lint_cli(manifest_path, None)
+        self.assertEqual(0, code)
+        self.assertIn("lint: clean", output)
+
+    def test_cli_config_load_failure_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            manifest_path = Path(root) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(self.manifest_obj("mock", root)),
+                encoding="utf-8",
+            )
+            missing_config = Path(root) / "does-not-exist.toml"
+            code, output, stderr = self.run_lint_cli(manifest_path, missing_config)
+        self.assertNotEqual(0, code)
+        self.assertIn("config file not found", stderr)
+        self.assertNotIn("lint: clean", output)
 
 
 if __name__ == "__main__":

@@ -1910,6 +1910,7 @@ def lint_manifest(
     config: AppConfig | None = None,
     identity_registry: ModelIdentityRegistry | None = None,
     allow_noncanonical_route: bool = False,
+    check_configured_engines: bool = False,
 ) -> list[str]:
     findings: list[str] = []
     if manifest.run_name == MODEL_SCOREBOARD_RUN_NAME:
@@ -1995,6 +1996,18 @@ def lint_manifest(
                 registry=identity_registry,
             )
         )
+
+    if check_configured_engines:
+        if config is None:
+            raise ValueError("check_configured_engines=True requires a config")
+        missing = sorted(
+            {task.engine for task in manifest.tasks if task.engine not in config.engines}
+        )
+        for engine in missing:
+            findings.append(
+                f"manifest: engine '{engine}' is not configured "
+                f"(available: {', '.join(sorted(config.engines))})."
+            )
 
     return findings
 
@@ -11585,6 +11598,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow a registry-marked noncanonical model route for a deliberate bakeoff",
     )
+    lint_parser.add_argument(
+        "--config",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="lint worker engines against this config; without it, engines are not validated",
+    )
 
     hud_parser = subparsers.add_parser("hud", help="start the persistent Ringside page in your browser")
     hud_parser.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -11704,9 +11723,13 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "lint":
             manifest = Manifest.from_path(args.manifest)
+            check_configured_engines = args.config is not None
+            lint_config = AppConfig.load(args.config) if check_configured_engines else None
             findings = lint_manifest(
                 manifest,
+                config=lint_config,
                 allow_noncanonical_route=args.allow_noncanonical_route,
+                check_configured_engines=check_configured_engines,
             )
             if findings:
                 print_lint_findings(findings)
