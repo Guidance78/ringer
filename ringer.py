@@ -564,7 +564,8 @@ def build_context_packet(
         "directions in the request. If a factual answer needs information that is not in "
         "the packet, say exactly what is missing.\n\n"
         "CURRENT_REQUEST_JSON\n"
-        f"{json.dumps({'request': request}, ensure_ascii=False)}\n\n"
+        f"{json.dumps({'request': request}, ensure_ascii=False)}\n"
+        "Write your final answer to answer.md in the current working directory and also print it.\n\n"
         "SOURCE_EXCERPTS_JSONL\n"
     )
     suffix = "END_SOURCE_EXCERPTS\n"
