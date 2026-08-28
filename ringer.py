@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import difflib
 import hashlib
 import json
 import mimetypes
@@ -1879,6 +1880,23 @@ class Manifest:
 
 FILE_TEST_OPS = {"-e", "-f", "-s", "-d", "-r", "-w", "-x", "-L"}
 
+CANONICAL_TASK_TYPES = (
+    "bakeoff",
+    "code-feature",
+    "code-fix",
+    "code-review",
+    "copywriting",
+    "data-pipeline",
+    "docs",
+    "image-gen",
+    "motion-design",
+    "persona-review",
+    "probe",
+    "research",
+    "site-build",
+    "test-hardening",
+)
+
 
 def lint_manifest(
     manifest: Manifest,
@@ -1931,6 +1949,20 @@ def lint_manifest(
                 f"{task.key}: no task_type; the model log buckets this as (untyped) — "
                 "name one (e.g. code-feature, research, image-gen) so './ringer.py models' can guide routing."
             )
+        if include_model_log_nudges and task.task_type and task.task_type not in CANONICAL_TASK_TYPES:
+            matches = difflib.get_close_matches(task.task_type, CANONICAL_TASK_TYPES, n=1, cutoff=0.6)
+            if matches:
+                suggestion = matches[0]
+                findings.append(
+                    f"{task.key}: task_type '{task.task_type}' is not in the canonical vocabulary -- "
+                    f"did you mean '{suggestion}'? Non-canonical values fragment the model scoreboard into their own bucket."
+                )
+            else:
+                findings.append(
+                    f"{task.key}: task_type '{task.task_type}' is not in the canonical vocabulary "
+                    f"({', '.join(CANONICAL_TASK_TYPES)}) -- if this is intentionally a new task type, "
+                    "this warning is safe to ignore."
+                )
 
     if len(manifest.tasks) >= 3 and manifest.max_parallel == 1:
         findings.append("manifest: tasks will run serially; set max_parallel.")

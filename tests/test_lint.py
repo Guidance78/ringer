@@ -288,6 +288,50 @@ class LintManifestTests(unittest.TestCase):
             f"worktrees manifest should not be flagged for expect_files: {findings}",
         )
 
+    def test_task_type_canonical_is_clean(self) -> None:
+        task = self.task()
+        task["task_type"] = "code-review"
+        findings = lint_manifest(self.manifest([task]), include_model_log_nudges=True)
+        self.assertFalse(
+            any("task_type" in item for item in findings),
+            f"canonical task_type should not be flagged, got: {findings}",
+        )
+
+    def test_task_type_typo_suggests_nearest_canonical(self) -> None:
+        task = self.task()
+        task["task_type"] = "review"
+        findings = lint_manifest(self.manifest([task]), include_model_log_nudges=True)
+        self.assertTrue(
+            any("code-review" in item for item in findings),
+            f"expected a code-review suggestion finding, got: {findings}",
+        )
+
+    def test_task_type_unrelated_lists_full_vocabulary(self) -> None:
+        task = self.task()
+        task["task_type"] = "zzz-totally-unrelated-nonsense"
+        findings = lint_manifest(self.manifest([task]), include_model_log_nudges=True)
+        self.assertTrue(
+            any(
+                "not in the canonical vocabulary" in item and "did you mean" not in item
+                for item in findings
+            ),
+            f"expected a full-vocabulary finding with no suggestion, got: {findings}",
+        )
+
+    def test_task_type_empty_keeps_original_nudge_only(self) -> None:
+        task = self.task()
+        task["task_type"] = ""
+        findings = lint_manifest(self.manifest([task]), include_model_log_nudges=True)
+        self.assertHasFinding(
+            findings,
+            "one: no task_type; the model log buckets this as (untyped) — "
+            "name one (e.g. code-feature, research, image-gen) so './ringer.py models' can guide routing.",
+        )
+        self.assertFalse(
+            any("not in the canonical vocabulary" in item for item in findings),
+            f"empty task_type should not trigger the canonical-vocabulary finding, got: {findings}",
+        )
+
     def test_compliant_manifest_is_clean(self) -> None:
         manifest = self.manifest(
             [
