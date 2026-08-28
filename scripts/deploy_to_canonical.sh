@@ -12,20 +12,20 @@ set -euo pipefail
 # hardcoded:
 #   * every tracked '*.toml' file
 #   * every tracked 'docs/*.md' file
-#   * the single path '.claude/skills/ringer/SKILL.md'
+#   * every tracked file under '.claude/skills/ringer/'
 #
 # Usage:
-#   deploy_to_canonical.sh [--dry-run] <dev-repo-path> <dev-ref> <prod-repo-path> [global-skill-dest]
+#   deploy_to_canonical.sh [--dry-run] <dev-repo-path> <dev-ref> <prod-repo-path> [global-skill-dest-dir]
 #
 # Guarantees:
 #   * never uses escalated privileges and never pushes to any remote
 #   * never touches anything outside the two given repos plus the optional
-#     skill destination file
+#     skill destination directory
 # --------------------------------------------------------------------------
 
 usage() {
     printf '%s\n' \
-        "usage: deploy_to_canonical.sh [--dry-run] <dev-repo-path> <dev-ref> <prod-repo-path> [global-skill-dest]" >&2
+        "usage: deploy_to_canonical.sh [--dry-run] <dev-repo-path> <dev-ref> <prod-repo-path> [global-skill-dest-dir]" >&2
 }
 
 # --- Argument parsing --------------------------------------------------------
@@ -47,7 +47,7 @@ DEV_REPO=$1
 DEV_REF=$2
 PROD_REPO=$3
 SKILL_DEST=${4:-}
-SKILL_PATH=.claude/skills/ringer/SKILL.md
+SKILL_DIR=.claude/skills/ringer
 
 # --- Step 1: verify prod repo exists, is git, and is not root-owned ----------
 if [ ! -d "$PROD_REPO" ]; then
@@ -76,7 +76,7 @@ fi
 # --- Step 2: compute the EXCLUDE set from the dev repo ------------------------
 EXCLUDE=$({
     git -c core.quotePath=false -C "$DEV_REPO" ls-files '*.toml' 'docs/*.md'
-    printf '%s\n' "$SKILL_PATH"
+    git -c core.quotePath=false -C "$DEV_REPO" ls-files -- "$SKILL_DIR"
 } | sort -u)
 
 # --- Step 3: fetch the dev ref; never push anywhere ---------------------------
@@ -147,10 +147,10 @@ if [ "${#BLOCKERS[@]}" -gt 0 ]; then
     exit 1
 fi
 
-# One-time skill-file removal: the skill lives only in the dev repo and in the
+# One-time skill removal: the skill lives only in the dev repo and in the
 # global skill directory; production should not track its own copy.
 SKILL_TRACKED=0
-if git -C "$PROD_REPO" ls-files --error-unmatch -- "$SKILL_PATH" >/dev/null 2>&1; then
+if [ -n "$(git -C "$PROD_REPO" ls-files -- "$SKILL_DIR")" ]; then
     SKILL_TRACKED=1
 fi
 
@@ -176,7 +176,7 @@ if [ "$DRY_RUN" = 1 ]; then
         printf '%s\n' "  (no code changes to sync)"
     fi
     if [ "$SKILL_TRACKED" = 1 ]; then
-        printf '%s\n' "  D  $SKILL_PATH   (one-time skill removal)"
+        printf '%s\n' "  D  $SKILL_DIR/   (one-time skill removal)"
     fi
     printf '%s\n' "[dry-run] nothing was staged or committed."
     exit 0
@@ -198,7 +198,7 @@ fi
 
 # --- Step 8: real run -- test gate, then commit -------------------------------
 if [ "$SKILL_TRACKED" = 1 ]; then
-    git -C "$PROD_REPO" rm --force -- "$SKILL_PATH"
+    git -C "$PROD_REPO" rm -r --force -- "$SKILL_DIR"
 fi
 
 TESTS_RAN=0
@@ -226,15 +226,15 @@ else
     printf '%s\n' "warning: nothing staged; no commit created" >&2
 fi
 
-# --- Step 9: optional copy of the skill file to a global destination ----------
+# --- Step 9: optional copy of the skill directory to a global destination ------
 SKILL_COPIED=0
 if [ -n "$SKILL_DEST" ]; then
-    if [ -f "$DEV_REPO/$SKILL_PATH" ]; then
-        mkdir -p "$(dirname "$SKILL_DEST")"
-        cp "$DEV_REPO/$SKILL_PATH" "$SKILL_DEST"
+    if [ -d "$DEV_REPO/$SKILL_DIR" ]; then
+        mkdir -p "$SKILL_DEST"
+        cp -r "$DEV_REPO/$SKILL_DIR/." "$SKILL_DEST/"
         SKILL_COPIED=1
     else
-        printf '%s\n' "warning: '$DEV_REPO/$SKILL_PATH' not found; skill not copied" >&2
+        printf '%s\n' "warning: '$DEV_REPO/$SKILL_DIR' not found; skill not copied" >&2
     fi
 fi
 

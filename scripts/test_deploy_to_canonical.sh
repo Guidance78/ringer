@@ -272,31 +272,35 @@ expect_log_count g "$PROD" 1
 pass g
 
 # ============================================================================
-# (h) one-time skill-file removal: prod copy no longer tracked after deploy
+# (h) one-time skill removal: the WHOLE .claude/skills/ringer/ subtree tracked
+#     in prod (index + a references/ file) is removed after deploy
 # ============================================================================
 DEV=$WORK/h/dev
 PROD=$WORK/h/prod
-SKILL=.claude/skills/ringer/SKILL.md
+SKILLDIR=.claude/skills/ringer
 repo "$DEV"
 put "$DEV/app.py" 'VERSION=1'
-put "$DEV/$SKILL" '# dev skill'
+put "$DEV/$SKILLDIR/SKILL.md" '# dev skill'
+put "$DEV/$SKILLDIR/references/notes.md" '# dev skill references'
 commit_all "$DEV" "dev: initial"
 put "$DEV/app.py" 'VERSION=2'
 commit_all "$DEV" "dev: bump app"
 repo "$PROD"
 put "$PROD/app.py" 'VERSION=1'
-put "$PROD/$SKILL" '# prod skill copy (must be removed)'
+put "$PROD/$SKILLDIR/SKILL.md" '# prod skill copy (must be removed)'
+put "$PROD/$SKILLDIR/references/notes.md" '# prod skill references (must be removed)'
 commit_all "$PROD" "prod: initial"
 
 run_deploy "$WORK/h/out.log" "$DEV" main "$PROD"
 [ "$RC" -eq 0 ] || fail h "deploy exited $RC; log: $(cat "$WORK/h/out.log")"
 expect_content h "$PROD/app.py" 'VERSION=2'
-if [ -n "$(git -C "$PROD" ls-files -- "$SKILL")" ]; then
-    fail h "skill file still tracked in prod after deploy"
+if [ -n "$(git -C "$PROD" ls-files -- "$SKILLDIR")" ]; then
+    fail h "skill files still tracked in prod after deploy: $(git -C "$PROD" ls-files -- "$SKILLDIR")"
 fi
-[ ! -e "$PROD/$SKILL" ] || fail h "skill file still present in prod working tree"
-last_commit_files "$PROD" | grep -q "$SKILL" ||
-    fail h "deploy commit did not remove the skill file"
+[ ! -e "$PROD/$SKILLDIR" ] ||
+    fail h "skill directory still present in prod working tree"
+last_commit_files "$PROD" | grep -q "$SKILLDIR" ||
+    fail h "deploy commit did not remove the skill directory"
 pass h
 
 # ============================================================================
@@ -308,11 +312,12 @@ fi
 pass i
 
 # ============================================================================
-# (j, bonus) optional 4th arg copies the skill file to a global destination
+# (j, bonus) optional 4th arg is a skill-dest DIRECTORY; the index file lands
+#     inside it
 # ============================================================================
 DEV=$WORK/j/dev
 PROD=$WORK/j/prod
-SKILLDEST=$WORK/j/global/skills/ringer/SKILL.md
+SKILLDEST=$WORK/j/global/skills/ringer
 repo "$DEV"
 put "$DEV/app.py" 'VERSION=1'
 put "$DEV/.claude/skills/ringer/SKILL.md" '# global skill copy'
@@ -326,7 +331,7 @@ commit_all "$PROD" "prod: initial"
 run_deploy "$WORK/j/out.log" "$DEV" main "$PROD" "$SKILLDEST"
 [ "$RC" -eq 0 ] || fail j "deploy exited $RC; log: $(cat "$WORK/j/out.log")"
 expect_content j "$PROD/app.py" 'VERSION=2'
-expect_content j "$SKILLDEST" '# global skill copy'
+expect_content j "$SKILLDEST/SKILL.md" '# global skill copy'
 grep -q 'skill copy' "$WORK/j/out.log" ||
     fail j "summary did not mention the skill copy; log: $(cat "$WORK/j/out.log")"
 pass j
@@ -385,5 +390,78 @@ grep -q 'app.py' "$WORK/l/out.log" ||
     fail l "dry-run did not print the plan; log: $(cat "$WORK/l/out.log")"
 pass l
 
-printf '%s\n' "ALL TESTS PASSED (a-i required; j,k,l bonus)"
+# ============================================================================
+# (m, bonus) dev-only additions under .claude/skills/ringer/ (the index AND a
+#     references/ file) are excluded from BOTH dry-run and real-run syncs
+# ============================================================================
+DEV=$WORK/m/dev
+PROD=$WORK/m/prod
+SKILLDIR=.claude/skills/ringer
+repo "$DEV"
+put "$DEV/app.py" 'VERSION=1'
+commit_all "$DEV" "dev: initial"
+put "$DEV/app.py" 'VERSION=2'
+put "$DEV/$SKILLDIR/SKILL.md" '# dev skill (must never reach prod)'
+put "$DEV/$SKILLDIR/references/notes.md" '# dev skill references (must never reach prod)'
+commit_all "$DEV" "dev: bump app and add skill dir (dev-only)"
+repo "$PROD"
+put "$PROD/app.py" 'VERSION=1'
+commit_all "$PROD" "prod: initial"
+
+# dry run: both skill files are excluded from the plan; prod stays untouched
+run_deploy "$WORK/m/dry.log" --dry-run "$DEV" main "$PROD"
+[ "$RC" -eq 0 ] || fail m "dry-run exited $RC; log: $(cat "$WORK/m/dry.log")"
+grep -q 'app.py' "$WORK/m/dry.log" ||
+    fail m "dry-run did not print the plan; log: $(cat "$WORK/m/dry.log")"
+if grep -q "$SKILLDIR" "$WORK/m/dry.log"; then
+    fail m "skill paths leaked into the dry-run plan; log: $(cat "$WORK/m/dry.log")"
+fi
+if [ -n "$(git -C "$PROD" ls-files -- "$SKILLDIR")" ]; then
+    fail m "dry-run left skill files tracked in prod: $(git -C "$PROD" ls-files -- "$SKILLDIR")"
+fi
+
+# real run: neither skill file may be staged or committed into prod
+run_deploy "$WORK/m/out.log" "$DEV" main "$PROD"
+[ "$RC" -eq 0 ] || fail m "deploy exited $RC; log: $(cat "$WORK/m/out.log")"
+expect_content m "$PROD/app.py" 'VERSION=2'
+if [ -n "$(git -C "$PROD" ls-files -- "$SKILLDIR")" ]; then
+    fail m "skill files tracked in prod after deploy: $(git -C "$PROD" ls-files -- "$SKILLDIR")"
+fi
+[ ! -e "$PROD/$SKILLDIR/SKILL.md" ] ||
+    fail m "SKILL.md present in prod after deploy"
+[ ! -e "$PROD/$SKILLDIR/references/notes.md" ] ||
+    fail m "references/notes.md present in prod after deploy"
+if last_commit_files "$PROD" | grep -q "$SKILLDIR"; then
+    fail m "deploy commit touched skill paths: $(last_commit_files "$PROD")"
+fi
+pass m
+
+# ============================================================================
+# (n, bonus) 4th arg is a skill-dest DIRECTORY: both the index and a
+#     references/ file are copied, preserving the subdirectory structure
+# ============================================================================
+DEV=$WORK/n/dev
+PROD=$WORK/n/prod
+SKILLDEST=$WORK/n/global/skills/ringer
+repo "$DEV"
+put "$DEV/app.py" 'VERSION=1'
+put "$DEV/.claude/skills/ringer/SKILL.md" '# global skill copy'
+put "$DEV/.claude/skills/ringer/references/notes.md" '# global skill references'
+commit_all "$DEV" "dev: initial"
+put "$DEV/app.py" 'VERSION=2'
+commit_all "$DEV" "dev: bump app"
+repo "$PROD"
+put "$PROD/app.py" 'VERSION=1'
+commit_all "$PROD" "prod: initial"
+
+run_deploy "$WORK/n/out.log" "$DEV" main "$PROD" "$SKILLDEST"
+[ "$RC" -eq 0 ] || fail n "deploy exited $RC; log: $(cat "$WORK/n/out.log")"
+expect_content n "$PROD/app.py" 'VERSION=2'
+expect_content n "$SKILLDEST/SKILL.md" '# global skill copy'
+expect_content n "$SKILLDEST/references/notes.md" '# global skill references'
+grep -q 'skill copy' "$WORK/n/out.log" ||
+    fail n "summary did not mention the skill copy; log: $(cat "$WORK/n/out.log")"
+pass n
+
+printf '%s\n' "ALL TESTS PASSED (a-i required; j,k,l,m,n bonus)"
 exit 0
