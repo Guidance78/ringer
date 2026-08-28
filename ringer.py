@@ -1843,6 +1843,10 @@ class Manifest:
             raise ValueError(f"dependency cycle: {' -> '.join(cycle)}")
         worktrees = bool(obj.get("worktrees", False))
         if worktrees:
+            if repo is None:
+                raise ValueError(
+                    "worktrees requires repo; without repo, no worktrees would be created"
+                )
             reserved_logs_dir = (workdir / "logs").resolve()
             collisions = []
             for task in tasks:

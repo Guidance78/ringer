@@ -77,6 +77,33 @@ class LintManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"task key must be a string"):
             self.manifest([task])
 
+    def test_worktrees_requires_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            manifest = {
+                "run_name": "worktrees-requires-repo",
+                "workdir": str(Path(root) / "work"),
+                "worktrees": True,
+                "tasks": [self.task()],
+            }
+            with self.assertRaisesRegex(
+                ValueError,
+                r"worktrees requires repo; without repo, no worktrees would be created",
+            ):
+                Manifest.from_obj(manifest)
+
+    def test_worktrees_with_repo_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            manifest = {
+                "run_name": "worktrees-with-repo",
+                "workdir": str(Path(root) / "work"),
+                "worktrees": True,
+                "repo": root,
+                "tasks": [self.task()],
+            }
+            parsed = Manifest.from_obj(manifest)
+        self.assertTrue(parsed.worktrees)
+        self.assertEqual(Path(root).resolve(), parsed.repo)
+
     def test_w1_unverifiable_check(self) -> None:
         manifest = self.manifest([self.task(check="echo ok && echo done")])
         self.assertHasFinding(
