@@ -38,7 +38,7 @@ GOOD_CHECK = (
 )
 
 
-def harness_engine(model_default: str = "openrouter/z-ai/glm-5.2") -> EngineConfig:
+def harness_engine(model_default: str = "zai/glm-5.2") -> EngineConfig:
     return EngineConfig(
         name="opencode",
         bin="/usr/local/bin/opencode",
@@ -91,7 +91,7 @@ class ModelPlaceholderTests(unittest.TestCase):
         cmd = build_worker_command(
             harness_engine(), taskdir=Path("/tmp/t"), spec="do it", full_access=False
         )
-        self.assertEqual("openrouter/z-ai/glm-5.2", cmd[cmd.index("-m") + 1])
+        self.assertEqual("zai/glm-5.2", cmd[cmd.index("-m") + 1])
 
     def test_task_model_overrides_default(self) -> None:
         cmd = build_worker_command(
@@ -99,9 +99,9 @@ class ModelPlaceholderTests(unittest.TestCase):
             taskdir=Path("/tmp/t"),
             spec="do it",
             full_access=False,
-            model="openrouter/moonshotai/kimi-k2.7-code",
+            model="moonshotai/kimi-k2.7-code",
         )
-        self.assertEqual("openrouter/moonshotai/kimi-k2.7-code", cmd[cmd.index("-m") + 1])
+        self.assertEqual("moonshotai/kimi-k2.7-code", cmd[cmd.index("-m") + 1])
 
     def test_model_args_expands_with_resolved_model(self) -> None:
         engine = EngineConfig(
@@ -141,10 +141,10 @@ class ModelPlaceholderTests(unittest.TestCase):
                 "key": "a",
                 "spec": LONG_SPEC,
                 "check": GOOD_CHECK,
-                "model": "  openrouter/x  ",
+                "model": "  zai/x  ",
             }
         )
-        self.assertEqual("openrouter/x", task.model)
+        self.assertEqual("zai/x", task.model)
         with self.assertRaisesRegex(ValueError, "model must be a string"):
             TaskSpec.from_obj(
                 {"key": "a", "spec": LONG_SPEC, "check": GOOD_CHECK, "model": 5}
@@ -156,11 +156,11 @@ class ModelPlaceholderTests(unittest.TestCase):
                 "harness": {
                     "bin": "/usr/local/bin/opencode",
                     "args_template": ["run", "-m", "{model}", "{spec}"],
-                    "model_default": "openrouter/z-ai/glm-5.2",
+                    "model_default": "zai/glm-5.2",
                 }
             }
         )
-        self.assertEqual("openrouter/z-ai/glm-5.2", engines["harness"].model_default)
+        self.assertEqual("zai/glm-5.2", engines["harness"].model_default)
 
 
 class ModelValidationTests(unittest.TestCase):
@@ -210,7 +210,7 @@ class ModelValidationTests(unittest.TestCase):
 
     def test_model_on_non_harness_engine_is_rejected(self) -> None:
         config = self.config({"codex": codex_like_engine()})
-        manifest = self.manifest(self.base_task(engine="codex", model="openrouter/x"))
+        manifest = self.manifest(self.base_task(engine="codex", model="zai/x"))
         with self.assertRaisesRegex(ValueError, "silently ignored"):
             validate_manifest_engines(manifest, config)
 
@@ -226,9 +226,23 @@ class ModelValidationTests(unittest.TestCase):
 
         config = self.config({"opencode": harness_engine(model_default="")})
         validate_manifest_engines(
-            self.manifest(self.base_task(engine="opencode", model="openrouter/x")),
+            self.manifest(self.base_task(engine="opencode", model="zai/x")),
             config,
         )
+
+    def test_opencode_openrouter_routes_are_rejected(self) -> None:
+        config = self.config({"opencode": harness_engine()})
+        manifest = self.manifest(
+            self.base_task(engine="opencode", model="openrouter/z-ai/glm-5.2")
+        )
+        with self.assertRaisesRegex(ValueError, "OpenRouter model routes are disabled"):
+            validate_manifest_engines(manifest, config)
+
+        config = self.config(
+            {"opencode": harness_engine(model_default="openrouter/z-ai/glm-5.2")}
+        )
+        with self.assertRaisesRegex(ValueError, "OpenRouter model routes are disabled"):
+            validate_manifest_engines(self.manifest(self.base_task(engine="opencode")), config)
 
     def test_model_args_without_a_resolved_model_is_valid(self) -> None:
         engine = EngineConfig(

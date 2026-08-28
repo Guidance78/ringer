@@ -1705,7 +1705,7 @@ class TaskSpec:
             raise ValueError(f"task {key}: verified must be a string (plain-English description of what the check proves)")
         model = obj.get("model", "")
         if not isinstance(model, str):
-            raise ValueError(f"task {key}: model must be a string (e.g. 'openrouter/z-ai/glm-5.2')")
+            raise ValueError(f"task {key}: model must be a string (e.g. 'zai/glm-5.2')")
         task_type = obj.get("task_type", "")
         if not isinstance(task_type, str):
             raise ValueError(f"task {key}: task_type must be a string")
@@ -6570,10 +6570,15 @@ class ModelIdentityRegistry:
         if noncanonical is not None:
             actual_meta = self.engine_meta.get(engine_key)
             canonical = noncanonical.identity
+            route_access = (
+                "OpenRouter API"
+                if raw_model_key.lower().startswith("openrouter/")
+                else (actual_meta.access if actual_meta else "unknown")
+            )
             return dataclass_replace(
                 canonical,
                 harness=actual_meta.harness if actual_meta else (engine_key or "unknown"),
-                access=actual_meta.access if actual_meta else "unknown",
+                access=route_access,
                 misrouted=True,
                 canonical_engine=noncanonical.canonical_engine,
                 canonical_model_key=noncanonical.canonical_model_key,
@@ -6591,7 +6596,7 @@ class ModelIdentityRegistry:
                 model_display=raw_model_key,
                 lab=f"{org}?" if org else "(unverified)",
                 harness=(meta.harness if meta else "OpenCode"),
-                access=(meta.access if meta else "OpenRouter API"),
+                access="OpenRouter API",
                 confidence="fallback",
                 source="unlisted OpenRouter slug",
                 unregistered=True,
@@ -6662,11 +6667,18 @@ def load_model_identity_registry(path: Path | None = None) -> ModelIdentityRegis
             model_key = str(model_key_raw).strip()
             if not model_key:
                 continue
+            model_access = model_log_text(raw_model.get("access"))
+            if not model_access:
+                model_access = (
+                    "OpenRouter API"
+                    if model_key.lower().startswith("openrouter/")
+                    else access
+                )
             identities[(engine, model_key)] = ModelIdentity(
                 model_display=model_log_text(raw_model.get("display")) or model_key,
                 lab=model_log_text(raw_model.get("lab")) or "(unknown)",
                 harness=harness,
-                access=access,
+                access=model_access,
                 alias=bool(raw_model.get("alias", False)),
                 confidence=model_log_text(raw_model.get("confidence")),
                 source=model_log_text(raw_model.get("source")),
@@ -10246,6 +10258,12 @@ def validate_manifest_engines(manifest: Manifest, config: AppConfig) -> None:
         raise ValueError(f"unknown worker engine(s): {', '.join(missing)}")
     for task in manifest.tasks:
         engine = config.engines[task.engine]
+        resolved_model = task.model or engine.model_default
+        if engine.name == "opencode" and resolved_model.lower().startswith("openrouter/"):
+            raise ValueError(
+                f"task {task.key}: OpenRouter model routes are disabled for OpenCode; "
+                "use a direct provider/model slug such as 'zai/glm-5.2'"
+            )
         requires_model = any("{model}" in item for item in engine.args_template)
         accepts_model = requires_model or "{model_args}" in engine.args_template
         if requires_model and not (task.model or engine.model_default):
