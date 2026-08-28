@@ -1,437 +1,74 @@
 ---
 name: ringer
 description: >-
-  Orchestrator playbook and routing rules for Ringer, the verified-swarm
-  delegation tool (ringer.py). TRIGGER — load BEFORE acting, not after —
-  whenever: you are about to run ANY script or command that calls a model or
-  drives a conversational/eval harness (probe, smoke test, simulation,
-  grader, persona conversation) outside a live Ringer run; you are about to
-  start an edit→test→edit loop or a batch of similar edits across files; you
-  are about to do a "quick check" that spawns a model or a CLI agent; you are
-  reviewing or diagnosing failed worker or model output; you catch yourself
-  thinking a task is "small enough to just do myself" — that thought IS the
-  trigger (a single task is a one-task manifest, and a bounded read-only
-  question is `ringer.py ask`); or you are writing or
-  reviewing a manifest, choosing a swarm pattern (review swarm, fix swarm,
-  focus group, bakeoff, research-with-proof), picking a worker engine, or
-  debugging a failed run. SKIP only for: reading or searching files, git
-  operations, a one-file few-line ONE-SHOT edit (once — if you are back for a
-  second pass, that is a loop: TRIGGER), authoring prose/specs/docs straight
-  from your own context, or pure conversation.
+  Orchestrate any model-calling, agent-CLI, coding/evaluation loop, or multi-file
+  change with the canonical Ringer workflow. Use before designing manifests,
+  choosing workers, invoking Codex/OpenCode/Claude CLI, diagnosing a worker
+  result, or running QC. Real runs require the Codex completion bridge; never
+  poll Ringer, logs, or Ringside.
 ---
 
-# Ringer orchestrator playbook
+# Ringer: operational core
 
-## Read this first — the five rules that actually get broken
+## Non-negotiable workflow
 
-1. **You review; workers type.** Your lane: specs, checks, pattern choice,
-   reading results. If you are typing implementation, running probes, or
-   babysitting a retry loop yourself, you have left your lane.
-2. **A single task is a one-task manifest.** Same verification, zero
-   ceremony. "Too small for Ringer" is how drift starts — the smoke test,
-   the probe script, the three-edit fix are all one-task manifests.
-3. **Beware the tiny-edit death spiral.** The named anti-pattern: each step
-   is individually small enough to justify inline, and two hours later the
-   exception has become the workflow and nothing was verified or visible.
-   The one-shot exception is ONE file, a few lines, ONCE. The second pass on
-   the same problem is a loop, and loops are manifests. **This spiral runs at
-   multi-day scale too** — a 2026-08-27 review found continuous inline coding
-   stretched across days, each edit individually excused as "just this one
-   tweak before I delegate the rest." That excuse is the trigger, not a
-   reason to keep going: the moment a second edit toward the same goal is
-   about to happen, stop typing and write the manifest for whatever remains,
-   however small it looks. Typing the fix yourself is not a faster path to
-   delegating it later — it's the spiral. The job is specs and review; tokens
-   spent typing implementation are tokens the orchestrator had no business
-   spending.
-4. **Verify the check before you debug the failure — especially before reaching
-   for a stronger model.** A FAIL from Ringer is a claim about the check, not
-   proof about the worker. A 2026-08-11 state-substrate round cost three
-   separate correction cycles before anyone confirmed the checks themselves
-   were broken (stale assertions, wall-clock-dependent tests, fixtures
-   guessed against an unverified API) — none of it was the worker's fault,
-   and the debugging happened at Opus rates: that one session cost $1,373 in
-   orchestrator spend alone (2026-08-27 cost review). Before writing a single
-   line of your own debugging, do the Post-run review ritual's check-first
-   step (below): read the raw worker log, confirm the check failed for the
-   RIGHT reason. Only debug or escalate to a pricier model once the check is
-   confirmed sound — a cheap check that's actually broken is not a reason to
-   bring in an expensive model to argue with it.
-5. **Runs are watched, not hidden — and the screen comes up FIRST.** The
-   moment this skill loads for real work, before you write a single spec,
-   put Ringside on the human's screen: `./ringer.py hud` (idempotent — if
-   one is already up it says so and opens the page; runs also auto-start
-   it). Ringside is the PAGE at http://127.0.0.1:8700 — NEVER launch the
-   Ringside.app application (`open -a Ringside`); it is a parked prototype
-   with a stale frontend. And never go dark: if your prep (research,
-   check-writing, manifest drafting) will take more than ~30 seconds,
-   tell the human in one sentence what you're doing and roughly how long
-   before you start — they should be watching the empty arena and reading
-   your one-liner, not wondering if anything is happening. Never pass
-   `--no-dashboard` except in automated tests or when the user explicitly
-   asks.
+1. The canonical runtime is `ringer` on `PATH` (`/opt/ringer`).
+   `/home/guidance/ringer_dev` is source development only.
+2. You review and integrate; workers edit. A repeated edit/test loop is a
+   one-task manifest, not inline work.
+3. Before the first run of a job, inspect `ringer models --task-type <type>`
+   and configured engines. Honor the user's selected worker lane; keep a
+   producer and QC in one manifest using `depends_on`.
+4. Build an independent check outside worker-write scope. Make it fail red
+   against the baseline, check real behavior rather than wording/sentinels,
+   and keep the Ringer check below its 60-second ceiling.
+5. Run `ringer lint <absolute-manifest>` and
+   `ringer run <absolute-manifest> --identity <identity> --dry-run` before a
+   real run. Open Ringside first and give the human `http://ringside.ubuhome`.
+6. For every real run, start exactly one managed child completion bridge. The
+   child runs `RINGER_NO_SELF_UPDATE=1 ringer run <absolute-manifest> --identity
+   <identity>` in the foreground and returns only when it exits. Neither child
+   nor director polls, tails logs, refreshes HUD, or performs periodic waits.
+7. On completion, read the durable run JSON, the exported deliverable/patch,
+   and raw logs for failures. Confirm whether a red check failed for the right
+   reason before judging the worker. Invalidate only check-caused failures with
+   a precise reason. Apply an accepted patch in the authoritative checkout,
+   run focused tests plus a live probe, inspect the diff, then commit.
+8. Do not spend indefinitely on retries. Tighten the acceptance check after a
+   genuine defect, but after two rejected candidates for one small change,
+   stop and report the evidence before launching another producer/QC pair.
 
-Ringer runs manifest tasks in parallel across cheap CLI workers (Codex,
-OpenCode/GLM, others via config) and verifies every task by **executing a
-check command** — exit 0 is the only PASS. Failed tasks are retried once
-with the check's actual failure output injected into the retry prompt. You —
-the orchestrating model — pay tokens only for specs, orchestration, and
-review.
+## The `ask` exception
 
-```bash
-./ringer.py lint manifest.json            # always lint before running
-./ringer.py run manifest.json --identity <who-you-are>
-./ringer.py demo                          # 3-worker smoke test
-./ringer.py run manifest.json --dry-run   # print the plan, spawn nothing
-```
-
-Runs land in `~/.ringer/runs/`. Raw worker logs land in `<workdir>/logs/`.
-Full reference: `README.md`. Ready-made manifest skeletons: `templates/`.
-Lint catches unverifiable checks, silent checks, worktree deliverable/commit
-loss, serial fan-out, write collisions, and underspecified specs; `run`
-prints the same findings as non-blocking warnings.
-
-## The one exception: `ask`
-
-Rule 2 holds for anything that changes a file, runs a build, or produces an
-artifact worth checking. One lane doesn't fit it: the human asks a bounded,
-read-only question over source you can already point at, and the answer is
-prose. A manifest for that is ceremony — but answering it in your own context
-means pulling whole files into a conversation that is already expensive.
+Rule 2 assumes a manifest. One lane skips it: a bounded, read-only question
+over source you can already point at, answered in prose, not a file change.
 
 ```bash
 ./ringer.py ask "<the human's request>" --source /absolute/path/to/source
 ```
 
-`ask` selects the passages that match the request, caps the packet, spawns one
-clean worker on it, and allows a single attempt. Repeat `--source` for several
-files or directories; `--state` takes a small file of settled decisions;
-`--dry-run` shows you the packet and spends nothing. If everything that matched
-is too large for the packet it says so and stops before the model call rather
-than letting a worker guess — but a source small enough to fit whole is sent
-whole, relevant or not, so choosing the sources IS the work. Directory scans
-stay inside the tree you name; a symlink leading out of it is skipped and
-reported. Runs appear on Ringside like any other, and `--redact` hides the
-request from Ringer's own state and eval records — it cannot scrub raw worker
-output, which is captured verbatim by design.
+Caps the packet, spawns one worker, one attempt; `--dry-run` shows the packet
+for free. The check is only "answer.md exists and is non-empty" — weak by
+design, so you still read the answer yourself. Anything whose output a check
+could actually execute stays a manifest. Full detail: `references/operating-history.md`.
 
-**Be honest about what it verifies.** The check is that `answer.md` exists and
-is non-empty. That is the weakest check in the tool, and it is also the best
-available — there is nothing to execute against free-form prose. `ask` proves
-the worker answered, never that the answer is right. You still read it.
+## Manifest essentials
 
-**Everything else is a manifest.** Code changes, external actions, research
-you intend to act on, anything whose output a check could actually execute —
-those keep the full path. When a request sits near the line, the tiebreaker is
-whether you could write a check that would catch a wrong answer. If you can,
-write it, and make it a manifest.
+- Give every task a `task_type`, explicit owned paths, a self-contained spec,
+  and an executable substantive `check`.
+- In worktree mode, export needed patches/reports outside the worktree; a
+  dependent task must be told the exact durable exported path.
+- Keep one job under one stable `run_name` across correction rounds.
+- Do not let a worker modify its own acceptance check. Use strict substance,
+  tolerant report formatting.
+- For QC/review, use the designated Codex lane unless the user selects another
+  lane. QC must assess the exact exported candidate and report APPROVE/REJECT.
 
-## Wait on notification, not polling
+## Load on demand
 
-A launched run is background work the harness already tracks — treat it that
-way, not as something to check in on. (Added 2026-08-27 after autonomous
-loop ticks burned turns polling a run that had already finished.)
-
-- **Start the run backgrounded and let the completion notification do the
-  waiting.** `./ringer.py run manifest.json ...` is a normal CLI call —
-  launch it as a backgrounded command and stop there. You are notified
-  automatically when it finishes. Do not sleep, poll, or re-invoke
-  `./ringer.py` / re-check the HUD in a loop to ask "is it done yet" —
-  that is exactly the polling this rule replaces. A CLI without a built-in
-  background+notify primitive should instead run the command as a single
-  blocking foreground child and wait on its exit, rather than polling logs
-  or the HUD on an interval — same principle, different mechanism.
-- **A scheduled wakeup paces the NEXT round, not the CURRENT one.** If a
-  multi-round goal is running under a dynamic wakeup loop, that loop decides
-  when to author and launch the next manifest — it is not a substitute for
-  the completion notification of the run already in flight. Reserve wakeups
-  for a long fallback heartbeat (in case a notification never fires) or for
-  external state Ringer genuinely can't push to you, never for a short
-  interval whose only job is checking whether a background run is done.
-- **Two consecutive empty ticks means stop, not retry.** If a loop wakes up
-  twice in a row and neither tick found completed work, do not schedule a
-  third wakeup on the same assumption. Stop immediately and report, in one
-  message: what you were waiting on (which run/task), whether a completion
-  notification has actually fired for anything this session (if it never
-  has, say so explicitly — that's the bug, not "still waiting"), and exactly
-  what's needed from the human to unblock (approval, a fixed check, a
-  credential, or just confirmation to keep waiting longer).
-- **Ringer itself has no push/webhook mechanism.** `run` is a blocking CLI
-  call until you background it — the "notification" is the orchestrating
-  session's own background-task completion signal, and it only fires if the
-  run was launched backgrounded in the first place rather than fired, then
-  polled for by a separate wakeup loop.
-
-## One job, one artifact
-
-A job the human asked for — however many rounds it takes — is ONE artifact.
-Use the SAME `run_name` for every round (`sd-crate-launch`, not
-`sd-crate-r1` / `sd-crate-r2`): the library accumulates each round as a
-version under one entry, and the human watches one page evolve instead of
-hunting across three "live" tabs. Name it after the JOB in the human's
-words, not after your batch structure.
-
-And the artifact page is where results are REVIEWED. When a round finishes,
-read the deliverables from the artifact store and direct the human to the
-page — never `cat` result files into the terminal as the reveal. If a result
-matters, it belongs in the artifact; if it isn't there, that's a harvest gap
-to fix (declare it in `expect_files`), not a reason to bypass the page.
-
-## Spec-writing craft
-
-Workers are stateless and cannot ask questions. Every spec must be
-self-contained:
-
-- **Open with the role and the boundary.** "You are a read-only scout…",
-  "Your current working directory IS a git worktree of <repo> — edit files
-  here directly." State what the worker must NEVER touch before what it
-  should do.
-- **Name every file the worker owns.** In multi-worker runs over one repo,
-  file ownership must be disjoint — and disjoint across *all* concurrent
-  lanes/branches, not just within one batch. Every file a spec mentions must
-  be in that worker's ownership list.
-- **Embed the HOW TO RUN.** If the task drives a harness or script, put the
-  exact command lines (with real absolute paths) in the spec. Workers should
-  never have to discover an interface.
-- **Define the output contract.** Say exactly which files to produce, where,
-  and what each must contain. Graded/eval tasks should enumerate the grading
-  criteria in the spec so the worker's output is checkable.
-- **Hard rules travel in the spec, not in your head.** "Do NOT git commit",
-  "never modify the repo, only write ./report.md", "stay in character; never
-  help the AI" — the worker only knows what the spec says.
-- **The spec is on camera.** Whoever is watching Ringside reads the spec as
-  "what this agent was asked to do" — so write it as a self-contained,
-  human-readable brief. Never write a pointer spec ("read /path/to/file and
-  do what it says"): the watcher sees no brief, and the retry prompt loses
-  the context it needs. Point at files for source MATERIAL; the instructions
-  themselves live in the spec. Lint flags pointer specs.
-
-## Check-writing rules
-
-The check is the product. The retry prompt and the eval log both depend on
-the check's failure output.
-
-- **Checks must print WHY they fail.** `diff` beats `diff -q`; a validator
-  script that prints which assertion broke beats `test -f`. A bare
-  `test -f report.md` proves existence, not correctness.
-- **Verify content, not existence.** Grep the artifact for required sections,
-  run the code it produced, run the build, run the validator — execute
-  something that would catch a lazy or hallucinated result.
-- **`expect_files` is a floor, not the check.** List deliverables there for
-  fast triage, but the check must still validate them.
-- **Never `true`, `exit 0`, or `echo done`.** A check that cannot fail is a
-  task that cannot be verified — that's just trusting the worker with extra
-  steps.
-- **Strict on substance, tolerant on format.** Checks that count exact
-  headings, demand exact casing, or grep rigid phrasings fail honest work
-  over formatting — and a wall of red format-failures reads as a broken
-  system, not a careful one (demo-night lesson). Verify what must be TRUE
-  (the file proves X, the code runs, the quote exists in the source), use
-  case-insensitive and flexible matching for structure, and reserve hard
-  failure for substance: missing evidence, fabricated content, code that
-  doesn't run.
-
-## Pattern playbook
-
-Reach for a named pattern before inventing one. Skeletons in `templates/`:
-
-| Kit | Use when |
-|---|---|
-| [review-swarm](../../../templates/review-swarm/) | You need broad read-only review coverage before deciding what to fix. |
-| [fix-swarm](../../../templates/fix-swarm/) | You have confirmed independent fixes that can be split across isolated worktrees. |
-| [focus-group](../../../templates/focus-group/) | You need isolated persona feedback on a product, pitch, prompt, or workflow. |
-| [bakeoff](../../../templates/bakeoff/) | You need evidence for choosing a model, prompt, or configuration across shared scenarios. |
-| [research-with-proof](../../../templates/research-with-proof/) | You need research backed by a proof task whose check executes the claim. |
-| [launch-kit](../../../templates/launch-kit/) | You need a go-to-market package built across research, persona review, and final assembly rounds. |
-| [asset-swarm](../../../templates/asset-swarm/) | You need media assets produced in parallel with executable checks for renders, batches, diagrams, or captures. |
-| [adversarial-review](../../../templates/adversarial-review/) | You want several models to review the same artifact before the orchestrator synthesizes findings. |
-| [repo-feature](../../../templates/repo-feature/) | You know what to build and need sandboxed workers to edit a real repo with build and git checks. |
-| [migration-swarm](../../../templates/migration-swarm/) | You have mechanical codebase transforms that can be partitioned across worktrees. |
-| [doc-swarm](../../../templates/doc-swarm/) | You need module docs with executed examples and checks against invented APIs. |
-| [test-hardening](../../../templates/test-hardening/) | You need stronger tests by module while keeping production source edits off-limits. |
-| [competitive-teardown](../../../templates/competitive-teardown/) | You need competitor research with citation allowlists and a synthesis phase. |
-| [data-pipeline](../../../templates/data-pipeline/) | You need fetch, transform, and validate stages with executed validators and honesty rules. |
-| [probe](../../../templates/probe/) | You need a one-task manifest for a smoke, probe, or post-mortem. |
-
-Pattern-selection judgment:
-
-- **Browse the catalog first.** Before writing any manifest, browse
-  `templates/README.md`: choose a kit, mix pieces from several, or write
-  your own having seen the prior art.
-- **Review before fix.** Run a read-only review swarm, read the reports
-  yourself, then compile the confirmed findings into a fix-swarm manifest.
-  Don't let the same worker find and fix.
-- **Personas must be separate workers.** Parallel personas in one context
-  bleed into each other. One persona per task, one session dir per task.
-- **Iterating on a prompt/product? Re-run the same panel.** A fixed persona
-  panel across rounds tells you whether a change fixed what the panel
-  actually complained about.
-- **Probes, smokes, and diagnosis loops are manifests too.** A model-calling
-  smoke test is a one-task manifest with the transcript as `expect_files`
-  and a validator as the check. Diagnosing a failed worker's output is a
-  read-only scout task. If it calls a model, it runs under Ringer — that is
-  what makes it visible, verified, and logged.
-
-## Engine selection
-
-**The engine choice belongs to the human — but the recommendation comes
-from THEIR evidence.** Before the FIRST run of a job: read what's wired up
-(`[engines.<name>]` blocks in `~/.config/ringer/config.toml`), run
-`./ringer.py models --task-type <this job's type>` for the local scoreboard,
-and glance at `./ringer.py catalog --changes` for anything newly free or
-newly cheap. Then ask the user which model should do the typing — top 2–3
-options with the NUMBERS in the pitch and a recommendation, e.g.: *"GLM is
-6/6 first-try on persona work here at ~2¢/task — recommended. Codex is also
-100% but ~8x the tokens. And kimi went free on OpenRouter yesterday — want
-it auditioning one of the small tasks?"* Honor their pick via the per-task
-`engine`/`model` fields; don't re-ask every round of the same job unless
-the mix isn't working. This is per-user by design: the scoreboard learns
-THIS user's workload — never import another machine's conclusions or
-recommend from a different user's numbers.
-
-**Explore or the scoreboard fossilizes.** Always recommending the proven
-pick means never learning a new one. In any run of 3+ tasks that has a
-low-stakes lane (docs sweeps, mechanical edits, persona reviews — strong
-executed check, retry to absorb failure), assign roughly ONE task to an
-exploration candidate from `./ringer.py models --explore --task-type <type>`
-(untested + cheap or free, text-capable, decent context). Free promos from
-`catalog --changes` jump the queue — a temporarily-free model is a zero-cost
-experiment. Never explore on time-critical work, never with more than a
-small slice of a batch, and name the experiment when presenting the engine
-ask so the human can veto it. Promotion ladder (computed by --explore):
-untested → probation (some evidence) → proven for a task_type (3+ tasks,
-first-try ≥ 0.67). Proven models earn bigger lanes in that type and an
-audition one rung up in adjacent types; repeated first-attempt failures end
-the audition — record the demotion in MODEL-NOTES so the next orchestrator
-doesn't re-run the experiment.
-
-**OpenCode is the harness; the model is a manifest field.** Unless a model
-ships its own first-class harness (Codex does), it runs through the
-`opencode` engine with the task's `"model"` field set to the OpenRouter
-slug — e.g. `"engine": "opencode", "model": "openrouter/moonshotai/kimi-k2.7-code"`.
-This holds even when someone — including the user, in the heat of a run —
-says to "call kimi directly" or reach for the model's own CLI: the harness
-is what provides the sandbox, raw logs, token counts, and executed
-verification, so routing around it silently drops all four. Never clone an
-engine block or splice `-m` through `engine_args` to change models; that's
-what the `model` field is for, and a bakeoff is only real when the MANIFEST
-names each competitor (2026-07-06 lesson: an engine block with a hard-coded
-model ran one model under three competitors' names).
-
-Engines are config blocks (`[engines.<name>]` in config.toml), selectable
-per task via the manifest `engine` field. Defaults are deliberate:
-
-- **codex** (default): strongest general worker. Use per-task `engine_args`
-  to set reasoning effort — spend it on hard tasks, not boilerplate.
-- **opencode**: the universal lane — any OpenRouter model via the `model`
-  field (engine `model_default` is GLM-5.2, the cheap-intelligence pick).
-  Validate a model new to you with a trivial one-task manifest before
-  trusting it with a batch.
-- Small/flash-class models are the first to choke on long conversational or
-  multi-turn harness tasks — watch their retry counts before scaling them.
-- Match `timeout_s` to the task: conversational harness tasks and
-  build-and-test checks need far more than file edits.
-- **Check the evidence before assigning models to tasks.** Run
-  `./ringer.py models` (optionally `--task-type <type>`) — the local
-  scoreboard aggregating every executed-check outcome per (model,
-  task_type): first_try_pass_rate is the routing signal; pass_rate includes
-  retry rescues. Then read `docs/MODEL-NOTES.md` (in the ringer repo) for
-  the judgment the numbers can't carry. Routing is grounded in performance,
-  not vibes (Jon directive 2026-07-06).
-- **"Show me the scoreboard" is one command.** When the human asks to see
-  the model scoreboard, rankings, model costs, or "which models work best,"
-  run `./ringer.py models --open` — it renders the full scoreboard (tiers,
-  first-try rates, est. $/task, usage, MODEL-NOTES excerpts, free-promo
-  watchlist) as a zero-LLM HTML page in the artifact library and opens it
-  in their browser. Costs no tokens; never hand-summarize the numbers when
-  the page can show them.
-- **Give every task a `task_type`** (canonical vocabulary in the README —
-  code-feature, code-fix, code-review, research, persona-review, site-build,
-  image-gen, docs, probe, bakeoff, ...). Untyped tasks bucket as (untyped)
-  and teach the scoreboard nothing; lint nudges you when it's missing.
-- **A verdict that isn't `PASS` isn't automatically the model's fault.** If a
-  check fails because the worker never actually ran — sandbox/harness blocked
-  before exec, missing binary, host defect — that's evidence about the
-  machine, not the model, and it must not sit in the scoreboard as a
-  failure. Exclude it: `./ringer.py models --invalidate --run <run_id>
-  [--task <task_key>] --reason "<what broke>"`. This keeps the row (audit
-  trail, visible `Invalidated` count in the table) but drops it from the
-  model's `tasks`/`pass_rate`/`first_try_pass_rate`. If the same task also
-  got a genuine pass on retry, add `--first-attempt-only` so only the
-  blocked attempt is excluded and the retry still earns first-try credit —
-  plain `--invalidate` on that task would wipe the pass out too. Never
-  invalidate a real `FAIL`; that's gaming the scoreboard, not correcting it.
-
-## Worktrees-mode footguns (learned the hard way)
-
-Run-level `"worktrees": true` gives each task an isolated git worktree of
-`repo`, detached at HEAD. Three consequences:
-
-1. **Passing tasks get their worktree DELETED.** Deliverables must land
-   outside the task worktree, or the check must export them first.
-2. **Worker commits die with the worktree.** Pattern that works: the worker
-   leaves changes uncommitted; the check runs
-   `git add -A && git diff --cached > <path-outside-worktree>.patch` and
-   validates the patch. You apply and commit on your branch after review.
-3. **Logs survive** (they go to `<workdir>/logs/`), so post-mortems work
-   even on deleted worktrees.
-4. **Gitignored outputs silently vanish from patch exports.** `git add -A`
-   cannot stage ignored files (build dirs like `dist/`), so a worker's edits
-   there pass its checks, export an incomplete patch, and die with the
-   worktree. If a task touches any gitignored path, the check must `cp`
-   those files to a path outside the worktree explicitly — verify the patch
-   AND the copies before trusting the run.
-
-And on your own side of the fence: when integrating patches into the real
-repo, stage specific paths — never `git add -A` in a checkout that may hold
-someone's untracked scratch files.
-
-## Post-run review ritual
-
-1. Read the run JSON in `~/.ringer/runs/` — statuses, retries, durations.
-2. For any retried or failed task, read the raw worker log in
-   `<workdir>/logs/` before deciding anything. Retries that passed on
-   attempt 2 often reveal a spec ambiguity worth fixing in your next
-   manifest.
-3. Spot-check at least one PASSING task's artifact per run. The check
-   catches most laziness; you catch the rest.
-4. Failures with useless error messages mean your CHECK needs work, not
-   (only) the worker.
-5. **Update `docs/MODEL-NOTES.md`** (in the ringer repo) when a run taught
-   you something about a model: one dated line under the model — task type,
-   what happened (attempts, tokens, failure mode), what you'd do
-   differently. Only what the executed checks and raw logs support. The raw
-   numbers took care of themselves — every attempt already landed in the
-   local model log (`./ringer.py models` to see the updated scoreboard).
-
-## Spend your own context deliberately
-
-The scoreboard exists so that worker tokens buy evidence. Your own tokens are
-not free either, and nothing in the tool constrains them:
-
-- **Reach for code before a model.** Counting, sorting, exact-text search,
-  field extraction, format conversion, file comparison, validation — `rg`,
-  `jq`, a parser, a two-line script. A model imitating `grep` is an expensive
-  way to get a worse `grep`.
-- **Select passages; don't load files.** Search first, then read what matched.
-  Loading a whole transcript because the answer is somewhere inside it is how
-  a cheap question turns expensive. `ask` does this for you; when you are not
-  using `ask`, do it by hand.
-- **Load a tool when the job needs it** — not every connector and schema at
-  the top of a session on the chance that one gets used.
-- **Answer the question that was asked.** A sentence when a sentence was asked
-  for. No process diary, no restating the human's request back to them, no
-  unrequested options.
-- **Never retry into a limit.** A token- or usage-limit failure is not a
-  transient error; retrying it just burns the budget faster. Reduce the input
-  or take a cheaper path.
-
-When you claim a saving, count the whole job — every call, including your own
-planning and review. Moving tokens from your context into a worker's is only a
-saving if the total came down.
-
-## Baked-in invariants (preserve in any change to ringer.py)
-
-Stdin closed (`< /dev/null`); sandbox mode explicit; verification executes
-the artifact; logs carry raw worker output only. These are load-bearing —
-engine and invocation changes must keep all four.
+- `references/operating-history.md` — detailed patterns, engine/cost notes,
+  check pitfalls, worktree rules, spend-your-own-context discipline, and
+  dated lessons. Read only the relevant section for engine routing, unusual
+  task shapes, or failure diagnosis.
+- `templates/README.md` under `/opt/ringer` — choose a manifest pattern before
+  writing a new multi-stage job.
