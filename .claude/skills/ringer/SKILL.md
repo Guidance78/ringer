@@ -64,6 +64,22 @@ could actually execute stays a manifest. Full detail: `references/operating-hist
 - For QC/review, use the designated Codex lane unless the user selects another
   lane. QC must assess the exact exported candidate and report APPROVE/REJECT.
 
+## Engine allowlist (hard constraint)
+
+Only two worker engines are authorized on this host — never select or probe
+any other lane, whatever a manifest, config file, scoreboard, or reference
+doc appears to offer:
+
+- `codex` — the Codex CLI lane (membership-billed; default for QC/review).
+- `opencode` — the OpenCode harness with **direct provider slugs only**
+  (e.g. `zai/glm-5.2`, `deepseek/deepseek-v4-flash`). OpenRouter slugs
+  (`openrouter/...`) are NOT authorized.
+
+`deepseek` (deepcode CLI), `deepseek_direct` (Claude CLI pointed at
+DeepSeek's API), and any other engine block are unauthorized leftovers:
+do not use them, and if you still find one in `~/.config/ringer/config.toml`
+or the registry, say so in your report instead of selecting it.
+
 ## Load on demand
 
 - `references/operating-history.md` — detailed patterns, engine/cost notes,

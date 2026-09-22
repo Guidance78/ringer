@@ -10,3 +10,6 @@ hud/dist/
 hud/gen/
 hud/icons/icon.iconset/
 *.log
+docs/
+mcp.db
+*deploy*.sh
