@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -23,7 +24,9 @@ from ringer import (  # noqa: E402
     WorkerResult,
     build_worker_command,
     effective_model_from_command,
+    lint_manifest,
     load_engines,
+    load_model_identity_registry,
     preflight_engine_bins,
     validate_manifest_engines,
 )
@@ -243,6 +246,69 @@ class ModelValidationTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "OpenRouter model routes are disabled"):
             validate_manifest_engines(self.manifest(self.base_task(engine="opencode")), config)
+
+    def test_model_availability_is_controlled_by_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            registry_path = Path(temp) / "model-identity.toml"
+            registry_path.write_text(
+                '[engines.codex]\nharness = "Codex CLI"\n'
+                '[engines.codex.models."gpt-6-sol"]\n'
+                'display = "GPT-6 Sol"\navailable = false\n'
+                '[engines.codex.models."gpt-6.1-sol"]\n'
+                'display = "GPT-6.1 Sol"\navailable = true\n'
+                '[engines.opencode.models."openai/gpt-6-sol"]\n'
+                'display = "GPT-6 Sol"\navailable = false\n'
+                '[engines.opencode.models."openai/gpt-6.1-sol"]\n'
+                'display = "GPT-6.1 Sol"\navailable = true\n',
+                encoding="utf-8",
+            )
+            registry = load_model_identity_registry(registry_path)
+
+        self.assertFalse(registry.identities[("codex", "gpt-6-sol")].available)
+        self.assertTrue(registry.identities[("codex", "gpt-6.1-sol")].available)
+        codex = EngineConfig(
+            name="codex",
+            bin="/usr/local/bin/codex",
+            args_template=("exec", "{model_args}", "-C", "{taskdir}", "{spec}"),
+            full_access_args=(),
+            sandbox_args=(),
+            token_regex=None,
+        )
+        config = self.config({"codex": codex})
+        with patch("ringer.load_model_identity_registry", return_value=registry):
+            with self.assertRaisesRegex(ValueError, "marked unavailable"):
+                unavailable_manifest = self.manifest(
+                    self.base_task(engine="codex", model="gpt-6-sol")
+                )
+                validate_manifest_engines(unavailable_manifest, config)
+            findings = lint_manifest(
+                unavailable_manifest,
+                config=config,
+                identity_registry=registry,
+            )
+            self.assertTrue(any("marked unavailable" in finding for finding in findings))
+            validate_manifest_engines(
+                self.manifest(self.base_task(engine="codex", model="gpt-6.1-sol")),
+                config,
+            )
+            validate_manifest_engines(
+                self.manifest(self.base_task(engine="codex", model="gpt-6.2-sol")),
+                config,
+            )
+            opencode_config = self.config({"opencode": harness_engine(model_default="")})
+            with self.assertRaisesRegex(ValueError, "marked unavailable"):
+                validate_manifest_engines(
+                    self.manifest(
+                        self.base_task(engine="opencode", model="openai/gpt-6-sol")
+                    ),
+                    opencode_config,
+                )
+            validate_manifest_engines(
+                self.manifest(
+                    self.base_task(engine="opencode", model="openai/gpt-6.1-sol")
+                ),
+                opencode_config,
+            )
 
     def test_model_args_without_a_resolved_model_is_valid(self) -> None:
         engine = EngineConfig(

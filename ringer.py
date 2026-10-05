@@ -2104,6 +2104,19 @@ def lint_manifest(
                 f"manifest: engine '{engine}' is not configured "
                 f"(available: {', '.join(sorted(config.engines))})."
             )
+    if config is not None:
+        registry = identity_registry or load_model_identity_registry()
+        for task in manifest.tasks:
+            engine = config.engines.get(task.engine)
+            if engine is None:
+                continue
+            model_key = task.model or engine.model_default
+            identity = registry.identities.get((engine.name, model_key))
+            if identity is not None and not identity.available:
+                findings.append(
+                    f"ERROR: {task.key}: model {model_key} is marked unavailable "
+                    "in the model identity registry and cannot be used as a worker."
+                )
 
     return findings
 
@@ -6668,6 +6681,7 @@ class ModelIdentity:
     last_verified: str = ""
     unregistered: bool = False
     misrouted: bool = False
+    available: bool = True
     canonical_engine: str = ""
     canonical_model_key: str = ""
     canonical_harness: str = ""
@@ -6818,6 +6832,7 @@ def load_model_identity_registry(path: Path | None = None) -> ModelIdentityRegis
                 confidence=model_log_text(raw_model.get("confidence")),
                 source=model_log_text(raw_model.get("source")),
                 last_verified=model_log_text(raw_model.get("last_verified")),
+                available=bool(raw_model.get("available", True)),
             )
             raw_noncanonical = raw_model.get("noncanonical_slugs", [])
             if isinstance(raw_noncanonical, list):
@@ -6884,6 +6899,7 @@ def row_identity_fields(row: dict[str, Any], registry: ModelIdentityRegistry) ->
             "last_verified": "",
             "unregistered": False,
             "misrouted": False,
+            "available": True,
             "identity_key": "",
             "canonical_route": "",
         }
@@ -6897,6 +6913,7 @@ def row_identity_fields(row: dict[str, Any], registry: ModelIdentityRegistry) ->
         "last_verified": identity.last_verified,
         "unregistered": identity.unregistered,
         "misrouted": identity.misrouted,
+        "available": identity.available,
         "identity_key": identity.canonical_model_key or model_log_text(row.get("model")),
         "canonical_route": (
             f"{identity.canonical_engine}:{identity.canonical_model_key} via "
@@ -6987,6 +7004,7 @@ def enrich_model_groups_with_identity(
                     "last_verified": "",
                     "unregistered": bool(group.get("model")),
                     "misrouted": False,
+                    "available": True,
                     "identity_key": str(group.get("model") or ""),
                     "canonical_route": "",
                 },
@@ -6998,6 +7016,8 @@ def enrich_model_groups_with_identity(
         if item.get("show_reasoning_effort") and not item.get("unattributed"):
             effort = item.get("reasoning_effort") or "(effort unrecorded)"
             item["model_display"] = f"{item['model_display']} · {effort}"
+        if item.get("available") is False:
+            item["model_display"] = f"{item['model_display']} · unavailable"
         if item.get("unattributed"):
             # The aggregation helper retains the engine as a legacy grouping key.
             # Public payloads must not expose harness branding as a model identity.
@@ -7134,6 +7154,7 @@ def create_read_model_schema(conn: Any) -> None:
             confidence TEXT,
             source TEXT,
             last_verified TEXT,
+            available INTEGER,
             PRIMARY KEY (engine, model_key)
         );
         CREATE TABLE IF NOT EXISTS identity_defaults (
@@ -7166,6 +7187,8 @@ def create_read_model_schema(conn: Any) -> None:
         conn.execute("ALTER TABLE identity ADD COLUMN alias INTEGER")
     if not read_model_column_exists(conn, "identity", "last_verified"):
         conn.execute("ALTER TABLE identity ADD COLUMN last_verified TEXT")
+    if not read_model_column_exists(conn, "identity", "available"):
+        conn.execute("ALTER TABLE identity ADD COLUMN available INTEGER")
     if needs_stamp:
         conn.executescript(
             """
@@ -7448,9 +7471,9 @@ def refresh_identity_tables(conn: Any, registry_path: Path) -> None:
             """
             INSERT INTO identity (
                 engine, model_key, model_display, lab, harness, access, alias, confidence, source,
-                last_verified
+                last_verified, available
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -7464,6 +7487,7 @@ def refresh_identity_tables(conn: Any, registry_path: Path) -> None:
                     identity.confidence,
                     identity.source,
                     identity.last_verified,
+                    1 if identity.available else 0,
                 )
                 for (engine, model_key), identity in sorted(registry.identities.items())
             ],
@@ -7621,6 +7645,11 @@ def load_identity_registry_from_db(conn: Any) -> ModelIdentityRegistry:
             confidence=model_log_text(row["confidence"]),
             source=model_log_text(row["source"]),
             last_verified=model_log_text(row["last_verified"]),
+            available=(
+                bool(row["available"])
+                if "available" in row.keys() and row["available"] is not None
+                else True
+            ),
         )
     for row in conn.execute("SELECT * FROM identity_defaults"):
         engine = model_log_text(row["engine"])
@@ -10391,6 +10420,7 @@ def validate_manifest_engines(manifest: Manifest, config: AppConfig) -> None:
     missing = sorted({task.engine for task in manifest.tasks if task.engine not in config.engines})
     if missing:
         raise ValueError(f"unknown worker engine(s): {', '.join(missing)}")
+    identity_registry = load_model_identity_registry()
     for task in manifest.tasks:
         engine = config.engines[task.engine]
         resolved_model = task.model or engine.model_default
@@ -10398,6 +10428,12 @@ def validate_manifest_engines(manifest: Manifest, config: AppConfig) -> None:
             raise ValueError(
                 f"task {task.key}: OpenRouter model routes are disabled for OpenCode; "
                 "use a direct provider/model slug such as 'zai/glm-5.2'"
+            )
+        identity = identity_registry.identities.get((engine.name, resolved_model))
+        if identity is not None and not identity.available:
+            raise ValueError(
+                f"task {task.key}: model {resolved_model!r} is marked unavailable in the "
+                "model identity registry and cannot be used as a worker; pick an available model"
             )
         requires_model = any("{model}" in item for item in engine.args_template)
         accepts_model = requires_model or "{model_args}" in engine.args_template

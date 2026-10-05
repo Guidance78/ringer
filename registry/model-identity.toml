@@ -10,7 +10,30 @@
 [engines.codex]
 harness = "Codex CLI"
 access = "OAuth plan"
-default_model_key = "gpt-5.5"
+default_model_key = "gpt-6-luna"
+
+[engines.codex.models."gpt-6-luna"]
+display = "GPT-6 Luna"
+lab = "OpenAI"
+confidence = "verified"
+source = "https://developers.openai.com/codex/models"
+last_verified = 2026-10-04
+
+[engines.codex.models."gpt-6.1-sol"]
+display = "GPT-6.1 Sol"
+lab = "OpenAI"
+confidence = "verified"
+source = "https://developers.openai.com/codex/models"
+last_verified = 2026-10-04
+available = true
+
+[engines.codex.models."gpt-6-sol"]
+display = "GPT-6 Sol"
+lab = "OpenAI"
+confidence = "verified"
+source = "https://developers.openai.com/codex/models"
+last_verified = 2026-10-04
+available = false
 
 [engines.codex.models."gpt-5.5"]
 display = "GPT-5.5"
@@ -18,6 +41,7 @@ lab = "OpenAI"
 confidence = "verified"     # snapshot gpt-5.5-2026-04-23, Codex CLI default; see capability file
 source = "https://developers.openai.com/codex/models"
 last_verified = 2026-07-10
+available = false          # retired 2026-10-14; historical rows only
 
 [engines.codex.models."gpt-5.6-sol"]
 display = "GPT-5.6 Sol"
@@ -25,6 +49,7 @@ lab = "OpenAI"
 confidence = "verified"
 source = "https://developers.openai.com/codex/models"
 last_verified = 2026-07-10
+available = false          # deregistered 2026-10-04; historical rows only
 
 [engines.codex.models."gpt-5.6-luna"]
 display = "GPT-5.6 Luna"
@@ -32,6 +57,7 @@ lab = "OpenAI"
 confidence = "verified"
 source = "https://developers.openai.com/codex/models"
 last_verified = 2026-07-10
+available = false          # deregistered 2026-10-04; historical rows only
 
 [engines.codex.models."gpt-5.6-terra"]
 display = "GPT-5.6 Terra"
@@ -39,6 +65,7 @@ lab = "OpenAI"
 confidence = "verified"
 source = "https://developers.openai.com/codex/models"
 last_verified = 2026-07-10
+available = false          # deregistered 2026-10-04; historical rows only
 
 [engines.grok]
 harness = "Grok Build CLI"
@@ -98,3 +125,33 @@ lab = "Meta"
 confidence = "verified"
 source = "manifest model field; OpenRouter slug meta-llama/llama-3.3-70b-instruct:free"
 last_verified = 2026-07-10
+
+[engines.opencode.models."openai/gpt-6.1-sol"]
+display = "GPT-6.1 Sol"
+lab = "OpenAI"
+harness = "OpenCode"
+access = "Direct provider API keys"
+confidence = "verified"
+source = "https://developers.openai.com/codex/models"
+last_verified = 2026-10-04
+available = true
+
+[engines.opencode.models."openai/gpt-6-sol"]
+display = "GPT-6 Sol"
+lab = "OpenAI"
+harness = "OpenCode"
+access = "Direct provider API keys"
+confidence = "verified"
+source = "https://developers.openai.com/codex/models"
+last_verified = 2026-10-04
+available = false
+
+[engines.opencode.models."openai/gpt-5.6-sol"]
+display = "GPT-5.6 Sol"
+lab = "OpenAI"
+harness = "OpenCode"
+access = "Direct provider API keys"
+confidence = "verified"
+source = "https://developers.openai.com/codex/models"
+last_verified = 2026-09-22
+available = false

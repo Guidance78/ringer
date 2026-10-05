@@ -23,6 +23,7 @@ from ringer import (  # noqa: E402
     connect_read_model_db,
     create_read_model_schema,
     humanized_log_date,
+    load_identity_registry_from_db,
     load_model_identity_registry,
     rebuild_read_model_db,
     run_models_command,
@@ -73,6 +74,7 @@ default_model_key = "gpt-5.5"
 display = "GPT-5.5"
 confidence = "unverified"
 source = ""
+available = false
 
 [engines.opencode]
 harness = "OpenCode"
@@ -182,6 +184,36 @@ class ModelDbTests(unittest.TestCase):
         self.assertEqual("wal", str(journal_mode).lower())
         self.assertEqual(3, user_version)
         self.assertEqual(3, version)
+
+    def test_old_identity_schema_migrates_with_available_default(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE identity (
+                    engine TEXT NOT NULL,
+                    model_key TEXT NOT NULL,
+                    model_display TEXT,
+                    lab TEXT,
+                    harness TEXT,
+                    access TEXT,
+                    alias INTEGER,
+                    confidence TEXT,
+                    source TEXT,
+                    last_verified TEXT,
+                    PRIMARY KEY (engine, model_key)
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO identity VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("codex", "gpt-5.5", "GPT-5.5", "OpenAI", "Codex", "OAuth", 0, "verified", "test", ""),
+            )
+
+        with contextlib.closing(connect_read_model_db(self.db_path)) as conn:
+            create_read_model_schema(conn)
+            registry = load_identity_registry_from_db(conn)
+
+        self.assertTrue(registry.identities[("codex", "gpt-5.5")].available)
 
     def test_rebuild_ingests_rows_and_counts_skipped_lines(self) -> None:
         write_jsonl(
@@ -460,6 +492,19 @@ class ModelDbTests(unittest.TestCase):
         self.assertEqual("OpenCode", by_model["openrouter/vendor/model"]["harness"])
         self.assertEqual("OpenRouter API", by_model["openrouter/vendor/model"]["access"])
         self.assertEqual("vendor?", by_model["openrouter/vendor/model"]["lab"])
+
+    def test_unavailable_model_status_survives_sqlite_read_model(self) -> None:
+        write_jsonl(
+            self.log_path,
+            [attempt(run_id="run-1", engine="codex", model="gpt-5.5")],
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(0, run_models_command(self.config(), self.model_args()))
+
+        group = json.loads(out.getvalue())[0]
+        self.assertFalse(group["available"])
+        self.assertEqual("GPT-5.5 · unavailable", group["model_display"])
 
     def test_models_override_log_without_db_does_not_touch_default_db(self) -> None:
         fixture_log = self.root / "fixture-runs.jsonl"
