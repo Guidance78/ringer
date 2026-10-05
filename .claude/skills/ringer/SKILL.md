@@ -64,6 +64,15 @@ could actually execute stays a manifest. Full detail: `references/operating-hist
 - For QC/review, use the designated Codex lane unless the user selects another
   lane. QC must assess the exact exported candidate and report APPROVE/REJECT.
 
+## Check-writing rules
+
+- A check must not demand evidence the spec never supplied. Re-read the inputs
+   before failing a worker for missing evidence; an honest UNVERIFIABLE answer is
+   not a failure.
+- Executed checks catch missing work better than subtle wrongness. When a swarm
+   changes Ringer's own docs, config, or checks, test that the artifact passes
+   its own validator, and review the patch even when the check passes.
+
 ## Engine allowlist (hard constraint)
 
 Only two worker engines are authorized on this host — never select or probe
